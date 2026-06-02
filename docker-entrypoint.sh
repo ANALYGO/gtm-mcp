@@ -3,6 +3,9 @@
 # variables.  This script writes them into .dev.vars (the standard
 # wrangler mechanism for local dev secrets) before starting the
 # dev server.
+#
+# Also generates a self-signed TLS cert so wrangler dev serves HTTPS,
+# which is required for OAuth issuer metadata behind a reverse proxy.
 set -eu
 
 DEV_VARS="${DEV_VARS_FILE:-/app/.dev.vars}"
@@ -27,9 +30,23 @@ if [ -n "${WORKER_HOST:-}" ]; then
   echo "WORKER_HOST=${WORKER_HOST}" >> "$DEV_VARS"
 fi
 
+# Generate self-signed TLS cert so wrangler dev serves HTTPS.
+# This ensures the OAuth issuer metadata uses https:// scheme,
+# which mcp-remote requires for client registration.
+CERT_DIR="/tmp/certs"
+mkdir -p "$CERT_DIR"
+if [ ! -f "$CERT_DIR/server.crt" ]; then
+  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+    -keyout "$CERT_DIR/server.key" \
+    -out "$CERT_DIR/server.crt" \
+    -subj "/CN=localhost" 2>/dev/null
+fi
+
 exec npx wrangler dev \
   --ip "0.0.0.0" \
   --port "3000" \
   --remote=false \
   --persist-to "/data" \
+  --https-cert-path "$CERT_DIR/server.crt" \
+  --https-key-path "$CERT_DIR/server.key" \
   "$@"
