@@ -1,0 +1,20 @@
+services:
+  gtm-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${PORT:-3000}:3000"
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID is required}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:?GOOGLE_CLIENT_SECRET is required}
+      - COOKIE_ENCRYPTION_KEY=${COOKIE_ENCRYPTION_KEY:?COOKIE_ENCRYPTION_KEY is required}
+      - HOSTED_DOMAIN=${HOSTED_DOMAIN:-}
+      - WORKER_HOST=${WORKER_HOST:-localhost:3000}
+    volumes:
+      # Persist KV + Durable Object state across restarts
+      - gtm_mcp_data:/data
+    restart: unless-stopped
+
+volumes:
+  gtm_mcp_data:
