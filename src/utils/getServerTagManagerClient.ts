@@ -1,33 +1,64 @@
 import { google } from "googleapis";
 import { refreshUpstreamAuthToken } from "./authorizeUtils";
+import { readRefreshTokenFromKV } from "./kvTokenStore";
 
 let cachedToken: { access_token: string; expiresAt: number } | null = null;
 
 async function getAccessToken(env: Env): Promise<string> {
+  // Tier 1: In-memory cache (existing, fast path)
   if (cachedToken && Date.now() < cachedToken.expiresAt - 300_000) {
     return cachedToken.access_token;
   }
-  const [tokenResult, errMessage] = await refreshUpstreamAuthToken({
-    upstreamUrl: "https://oauth2.googleapis.com/token",
-    clientId: env.GOOGLE_CLIENT_ID,
-    clientSecret: env.GOOGLE_CLIENT_SECRET,
-    refreshToken: env.GTM_REFRESH_TOKEN,
-  });
-  if (errMessage || !tokenResult) {
-    console.error(`[GTM] Google refresh failed: ${errMessage}`);
-    throw new Error(`Google refresh failed: ${errMessage || "no token returned"}`);
+
+  // Tier 2: Env var GTM_REFRESH_TOKEN (backward-compatible)
+  if (env.GTM_REFRESH_TOKEN) {
+    const [tokenResult, errMessage] = await refreshUpstreamAuthToken({
+      upstreamUrl: "https://oauth2.googleapis.com/token",
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
+      refreshToken: env.GTM_REFRESH_TOKEN,
+    });
+    if (tokenResult && !errMessage) {
+      cachedToken = {
+        access_token: tokenResult.access_token,
+        expiresAt: Date.now() + (tokenResult.expires_in ?? 3600) * 1000,
+      };
+      return cachedToken.access_token;
+    }
+    console.warn(
+      `[GTM] GTM_REFRESH_TOKEN refresh failed (${errMessage}), falling through to KV tier`,
+    );
   }
-  cachedToken = {
-    access_token: tokenResult.access_token,
-    expiresAt: Date.now() + (tokenResult.expires_in ?? 3600) * 1000,
-  };
-  return cachedToken.access_token;
+
+  // Tier 3: KV-stored refresh token (new, self-healing)
+  const kvRefreshToken = await readRefreshTokenFromKV(env.OAUTH_KV);
+  if (kvRefreshToken) {
+    const [tokenResult, errMessage] = await refreshUpstreamAuthToken({
+      upstreamUrl: "https://oauth2.googleapis.com/token",
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
+      refreshToken: kvRefreshToken,
+    });
+    if (tokenResult && !errMessage) {
+      cachedToken = {
+        access_token: tokenResult.access_token,
+        expiresAt: Date.now() + (tokenResult.expires_in ?? 3600) * 1000,
+      };
+      return cachedToken.access_token;
+    }
+    console.error(`[GTM] KV refresh token refresh failed: ${errMessage}`);
+    throw new Error(
+      "Google refresh failed: refresh token from KV is expired or revoked. Re-authenticate via MCP OAuth flow.",
+    );
+  }
+
+  // No refresh token available from any tier
+  throw new Error(
+    "No refresh token available. Set GTM_REFRESH_TOKEN or authenticate via MCP at least once.",
+  );
 }
 
 export async function getServerTagManagerClient(env: Env) {
-  if (!env.GTM_REFRESH_TOKEN) {
-    throw new Error("GTM_REFRESH_TOKEN not configured — set it in Coolify env vars");
-  }
   const accessToken = await getAccessToken(env);
   return google.tagmanager({
     version: "v2",
