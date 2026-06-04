@@ -1,3 +1,5 @@
+import { writeRefreshTokenToKV } from "./kvTokenStore";
+
 /**
  * Constructs an authorization URL for an upstream service.
  *
@@ -212,12 +214,15 @@ export async function handleTokenExchangeCallback(
 
     console.log("[TokenExchange] Google token refresh successful.");
 
+    const effectiveRefreshToken = token.refresh_token || p.refreshToken;
+    await writeRefreshTokenToKV(env.OAUTH_KV, effectiveRefreshToken);
+
     return {
       newProps: {
         ...p,
         accessToken: token.access_token,
         expiresAt: now + token.expires_in,
-        refreshToken: token.refresh_token || p.refreshToken,
+        refreshToken: effectiveRefreshToken,
       } satisfies Props,
       accessTokenTTL: 1800,
     };

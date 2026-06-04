@@ -9,6 +9,7 @@ import {
   Props,
 } from "./authorizeUtils";
 import { getServerTagManagerClient } from "./getServerTagManagerClient";
+import { writeRefreshTokenToKV } from "./kvTokenStore";
 import { renderMainPage } from "./renderMainPage";
 import { renderPrivacyPage } from "./renderPrivacyPage";
 import { renderTermsPage } from "./renderTermsPage";
@@ -173,6 +174,10 @@ app.get("/callback", async (c) => {
       userId: id,
     } satisfies Props,
   });
+
+  if (tokenResult.refresh_token) {
+    await writeRefreshTokenToKV(c.env.OAUTH_KV, tokenResult.refresh_token);
+  }
 
   const url = new URL(redirectTo);
   url.searchParams.set("email", email);
