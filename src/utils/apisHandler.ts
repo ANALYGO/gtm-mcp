@@ -309,6 +309,68 @@ app.get("/api/gtm/accounts/:accountId/containers/:containerId/workspaces/:worksp
   }
 });
 
+// GET /connect — browser-friendly Google OAuth flow to seed the KV refresh token.
+// No MCP client required. Just visit /connect in a browser, authorize with Google,
+// and the server-level refresh token is stored in KV for Aegis REST API use.
+app.get("/connect", async (c) => {
+  const state = crypto.randomUUID();
+  const scopes = [
+    "email",
+    "profile",
+    "https://www.googleapis.com/auth/tagmanager.manage.accounts",
+    "https://www.googleapis.com/auth/tagmanager.edit.containers",
+    "https://www.googleapis.com/auth/tagmanager.delete.containers",
+    "https://www.googleapis.com/auth/tagmanager.edit.containerversions",
+    "https://www.googleapis.com/auth/tagmanager.manage.users",
+    "https://www.googleapis.com/auth/tagmanager.publish",
+    "https://www.googleapis.com/auth/tagmanager.readonly",
+  ];
+  const url = getUpstreamAuthorizeUrl({
+    upstreamUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    scope: scopes.join(" "),
+    clientId: c.env.GOOGLE_CLIENT_ID,
+    redirectUri: new URL("/connect/callback", c.req.url).href,
+    state,
+    hostedDomain: c.env.HOSTED_DOMAIN,
+    hasRefreshToken: false,
+  });
+  return Response.redirect(url);
+});
+
+// GET /connect/callback — Google OAuth callback for server-level token seeding.
+// Exchanges the code for tokens and writes the refresh token to KV.
+// Does NOT create an MCP grant — this is purely for REST API access.
+app.get("/connect/callback", async (c) => {
+  const code = c.req.query("code");
+
+  if (!code) {
+    return c.text("Missing code", 400);
+  }
+
+  const [tokenResult, googleErrResponse] = await fetchUpstreamAuthToken({
+    upstreamUrl: "https://oauth2.googleapis.com/token",
+    clientId: c.env.GOOGLE_CLIENT_ID,
+    clientSecret: c.env.GOOGLE_CLIENT_SECRET,
+    code,
+    redirectUri: new URL("/connect/callback", c.req.url).href,
+    grantType: "authorization_code",
+  });
+
+  if (googleErrResponse) {
+    return googleErrResponse;
+  }
+
+  if (tokenResult.refresh_token) {
+    await writeRefreshTokenToKV(c.env.OAUTH_KV, tokenResult.refresh_token);
+    return new Response(
+      "<html><body><h1>✅ GTM Connected</h1><p>The server refresh token has been stored. Aegis can now use the GTM REST API.</p></body></html>",
+      { headers: { "Content-Type": "text/html;charset=UTF-8" } },
+    );
+  }
+
+  return c.text("No refresh token received from Google. Try revoking access at https://myaccount.google.com/permissions and reconnecting.", 400);
+});
+
 app.get("/", async () => {
   return new Response(renderMainPage(), {
     headers: {
